@@ -21,7 +21,12 @@ def patched(h,p,f=0,t=0,pr=0,fl=0):
 socket.getaddrinfo = patched
 def get_token():
     url=f"https://{SUPA_HOST}/auth/v1/token?grant_type=password"
+    print(f"Calling {url}")
     r=requests.post(url, headers={"apikey": ANON, "Content-Type": "application/json"}, json={"email": EMAIL, "password": PASS}, timeout=15)
+    print(f"STATUS: {r.status_code}")
+    print(f"BODY: {r.text[:1000]}")
+    if r.status_code != 200:
+        raise Exception(f"Auth fail {r.status_code}: {r.text[:500]}")
     return r.json().get("access_token")
 def get_chain():
     token=get_token()
