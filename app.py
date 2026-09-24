@@ -5,7 +5,7 @@ app = Flask(__name__)
 
 @app.route('/')
 def home():
-    return "Nifty-Bot Live! Bot is Running"
+    return "Nifty-Bot is LIVE - Running"
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
