@@ -4,7 +4,7 @@ app = Flask(__name__)
 
 P = "kscckhjrasotwejshmr"
 H = f"{P}.supabase.co"
-K = os.getenv("SUPABASE_KEY","").strip()
+K = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImtzY2NraGpyYXNvdHdlamRzaG1yIiwicm9sZSI6ImFub24iLCJpYXQiOjE3N2YzNTU1MTc5ImV4cCI6MjAxMzkzMTU3N30.2KUybzVBJ97NzGA99OrMnNxvFs1P04cdHyyyl--dqs"
 E = os.getenv("ROEIQ_EMAIL","").strip()
 PW = os.getenv("ROEIQ_PASS","").strip()
 B = os.getenv("BOT_TOKEN","").strip()
