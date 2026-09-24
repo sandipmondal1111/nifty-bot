@@ -1,97 +1,110 @@
 import os, time, threading
 from flask import Flask
 import requests
-from fyers_apiv3 import fyersModel
+from datetime import datetime
 
 app = Flask(__name__)
-
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 CHAT_ID = os.environ.get("CHAT_ID")
 CLIENT_ID = os.environ.get("CLIENT_ID")
 ACCESS_TOKEN = os.environ.get("ACCESS_TOKEN")
 
 @app.route('/')
-def home():
-    return "Nifty-Bot is LIVE - OI Bot Running"
+def home(): return "Nifty Expiry Bot LIVE"
 
 def send_telegram(msg):
     try:
-        requests.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
-                      data={"chat_id": CHAT_ID, "text": msg, "parse_mode": "HTML"}, timeout=10)
+        requests.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage", data={"chat_id": CHAT_ID, "text": msg, "parse_mode": "HTML"}, timeout=10)
     except Exception as e:
         print(e)
 
-def oi_loop():
-    time.sleep(3)
+def bot_loop():
+    from fyers_apiv3 import fyersModel
     fyers = fyersModel.FyersModel(client_id=CLIENT_ID, token=ACCESS_TOKEN, is_async=False, log_path="")
-    send_telegram("✅ <b>OI Bot Live!</b> Market open me ATM OI ayega")
+    send_telegram("✅ <b>Nifty Expiry Bot LIVE</b>\nTuesday 1L | Normal 50K | 1 Min Check")
+
+    last_pe, last_ce = 0, 0
 
     while True:
         try:
-            # Nifty LTP
-            nifty = fyers.quotes({"symbols":"NSE:NIFTY50-INDEX"})
-            if nifty.get("s")!= "ok":
-                time.sleep(60); continue
-            ltp = nifty["d"][0]["v"]["lp"]
+            q = fyers.quotes({"symbols":"NSE:NIFTY50-INDEX"})
+            if q.get("s")!="ok": time.sleep(60); continue
+            ltp = q["d"][0]["v"]["lp"]
             atm = int(round(ltp/50)*50)
 
-            # Option Chain se ATM ka OI
-            chain = fyers.optionchain(data={"symbol":"NSE:NIFTY50-INDEX","strikecount":20})
-            if chain.get("s") == "ok":
-                oc = chain["data"]["optionsChain"]
-                atm_row = min(oc, key=lambda x: abs(x["strikePrice"]-atm))
-                # Fyers chain keys alag-alag ho sakte hai, sab handle kiya
-                ce_oi = atm_row.get("callOI", atm_row.get("oI",0) if "call" not in str(atm_row).lower() else 0)
-                pe_oi = atm_row.get("putOI",0)
-                ce_ch = atm_row.get("callOIChange", atm_row.get("callOICh",0))
-                pe_ch = atm_row.get("putOIChange", atm_row.get("putOICh",0))
+            chain = fyers.optionchain(data={"symbol":"NSE:NIFTY50-INDEX","strikecount":30})
+            if chain.get("s")!="ok": time.sleep(60); continue
 
-                # agar nested structure ho
-                if ce_oi == 0 and "call" in atm_row:
-                    ce_oi = atm_row["call"].get("oi",0)
-                    ce_ch = atm_row["call"].get("oiChange",0)
-                    pe_oi = atm_row["put"].get("oi",0)
-                    pe_ch = atm_row["put"].get("oiChange",0)
+            oc = chain["data"]["optionsChain"]
+            row = min(oc, key=lambda x: abs(x["strikePrice"]-atm))
 
-                # Agar abhi bhi 0 hai to quotes se try karo weekly symbols ke liye
-                if ce_oi == 0 and pe_oi == 0:
-                    # Expiry data se symbol lo
-                    expiry = chain["data"]["expiryData"][0]["expiry"] if "expiryData" in chain["data"] else None
-                    print(f"Expiry: {expiry} Row: {atm_row}")
+            ce_oi = row.get("callOI",0) or (row.get("call",{}).get("oi",0) if isinstance(row.get("call"), dict) else 0)
+            pe_oi = row.get("putOI",0) or (row.get("put",{}).get("oi",0) if isinstance(row.get("put"), dict) else 0)
+            if ce_oi==0 and pe_oi==0: time.sleep(60); continue
 
-                def fmt(n):
-                    try:
-                        n=int(n)
-                        return f"{n/100000:.1f}L" if n>=100000 else f"{n/1000:.1f}k" if n>=1000 else str(n)
-                    except: return str(n)
+            if last_pe == 0:
+                last_pe, last_ce = pe_oi, ce_oi
+                time.sleep(60); continue
 
-                side = "PE Heavy 🟢" if pe_oi>ce_oi else "CE Heavy 🔴" if ce_oi>pe_oi else "Balanced ⚪"
+            pe_diff = pe_oi - last_pe
+            ce_diff = ce_oi - last_ce
 
-                msg = f"""⚪ <b>NIFTY {ltp:.0f} | ATM {atm_row['strikePrice']}</b>
+            today = datetime.now().weekday()
+            is_tuesday = today == 1
+            threshold = 100000 if is_tuesday else 50000
+            day_tag = "TUESDAY EXPIRY" if is_tuesday else "NORMAL DAY"
 
-PE: OI {fmt(pe_oi)} | CH {fmt(pe_ch)}
-CE: OI {fmt(ce_oi)} | CH {fmt(ce_ch)}
+            if abs(pe_diff) >= threshold or abs(ce_diff) >= threshold:
 
-👉 {side}
-Diff: {fmt(abs(pe_oi-ce_oi))}"""
+                # CLEAR ACTION LOGIC
+                if pe_diff > threshold and ce_diff < 0:
+                    title = "🟢 BULLISH BREAKOUT"
+                    reason = f"ATM PE me {pe_diff/1000:.0f}k Fresh Buying, CE me {abs(ce_diff)/1000:.0f}k Short Covering"
+                    action = f"👉 ACTION: BUY karo\n1. Nifty ATM {row['strikePrice']} PE BUY\n2. Ya Nifty Futures BUY\nSL: {row['strikePrice']-50} ke niche\nTarget: 80-100 points"
 
-                # Raat me 0 hai to spam mat karo, market time pe hi bhejo
-                from datetime import datetime
-                now = datetime.now()
-                if 9 <= now.hour <= 15 and ce_oi!=0:
-                    send_telegram(msg)
+                elif ce_diff > threshold and pe_diff < 0:
+                    title = "🔴 BEARISH BREAKDOWN"
+                    reason = f"ATM CE me {ce_diff/1000:.0f}k Fresh Selling, PE me {abs(pe_diff)/1000:.0f}k Exit"
+                    action = f"👉 ACTION: SELL karo\n1. Nifty ATM {row['strikePrice']} CE BUY\n2. Ya Nifty Futures SELL\nSL: {row['strikePrice']+50} ke upar\nTarget: 80-100 points"
+
+                elif pe_diff > threshold:
+                    title = "🟢 SUPPORT BAN RAHA HAI"
+                    reason = f"PE OI +{pe_diff/1000:.0f}k bada (Strong Support)"
+                    action = "👉 ACTION: WAIT FOR DIP & BUY\nDip pe PE BUY karo, CE SELL mat karo abhi"
+
+                elif ce_diff > threshold:
+                    title = "🔴 RESISTANCE BAN RAHA HAI"
+                    reason = f"CE OI +{ce_diff/1000:.0f}k bada (Strong Resistance)"
+                    action = "👉 ACTION: RISE PE SELL\nUpar aate hi CE BUY karo, PE me Profit Book karo"
+
+                elif pe_diff < -threshold:
+                    title = "⚠️ SUPPORT TOOT RAHA HAI"
+                    reason = f"PE OI -{abs(pe_diff)/1000:.0f}k kam (Support Weak)"
+                    action = "👉 ACTION: EXIT LONG / CAUTION\nPE wale nikal rahe hai, apna PE BUY exit karo"
+
                 else:
-                    print(msg)
-                    # Raat me live proof ke liye ek hi baar
-                    if now.minute % 30 == 0:
-                        send_telegram(f"📈 NIFTY {ltp:.0f} ATM {atm} - Bot Live | OI subah 9:15 se ayega")
+                    title = "⚠️ RESISTANCE TOOT RAHA HAI"
+                    reason = f"CE OI -{abs(ce_diff)/1000:.0f}k kam (Resistance Weak)"
+                    action = "👉 ACTION: EXIT SHORT / CAUTION\nCE wale nikal rahe hai, apna CE BUY exit karo"
 
-            time.sleep(300) # 5 min
-        except Exception as e:
-            print(f"Loop err: {e}")
+                msg = f"""🚨 <b>{title} | {day_tag}</b>
+NIFTY {ltp:.0f} | ATM {row['strikePrice']}
+
+{reason}
+
+PE OI: {last_pe/100000:.2f}L → {pe_oi/100000:.2f}L ({'+' if pe_diff>0 else ''}{pe_diff/1000:.0f}k)
+CE OI: {last_ce/100000:.2f}L → {ce_oi/100000:.2f}L ({'+' if ce_diff>0 else ''}{ce_diff/1000:.0f}k)
+
+{action}"""
+
+                send_telegram(msg)
+                last_pe, last_ce = pe_oi, ce_oi
+
             time.sleep(60)
+        except Exception as e:
+            print(f"Err {e}"); time.sleep(60)
 
-threading.Thread(target=oi_loop, daemon=True).start()
+threading.Thread(target=bot_loop, daemon=True).start()
 
 if __name__ == "__main__":
-    app.run(host='0.0.0.0', port=int(os.environ.get("PORT", 10000)))
+    app.run(host='0.0.0.0', port=int(os.environ.get("PORT",10000)))
