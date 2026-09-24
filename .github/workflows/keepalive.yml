@@ -1,0 +1,10 @@
+name: Keep Render Awake
+on:
+  schedule:
+    - cron: '*/10 * * * *'
+  workflow_dispatch:
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - run: curl -s https://nifty-bot-dm0o.onrender.com/
