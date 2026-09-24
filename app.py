@@ -1,5 +1,4 @@
-import os, time, threading, math
-from datetime import datetime, timedelta
+import os, time, threading
 from flask import Flask
 import requests
 from fyers_apiv3 import fyersModel
@@ -17,119 +16,80 @@ def home():
 
 def send_telegram(msg):
     try:
-        url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-        requests.post(url, data={"chat_id": CHAT_ID, "text": msg, "parse_mode": "HTML"}, timeout=10)
+        requests.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
+                      data={"chat_id": CHAT_ID, "text": msg, "parse_mode": "HTML"}, timeout=10)
     except Exception as e:
-        print(f"TG Error: {e}")
-
-def get_next_expiry():
-    # Nifty ka next Thursday expiry nikalo
-    today = datetime.now()
-    days_ahead = 3 - today.weekday() # Thursday = 3
-    if days_ahead < 0: days_ahead += 7
-    exp = today + timedelta(days=days_ahead)
-    # Fyers ko YYYY-MM-DD format chahiye optionchain me nahi, but symbol me YYMMM
-    return exp
+        print(e)
 
 def oi_loop():
-    time.sleep(5)
-    send_telegram("✅ <b>OI Bot Live!</b>\nAb har 5 min me ATM OI ayega")
+    time.sleep(3)
     fyers = fyersModel.FyersModel(client_id=CLIENT_ID, token=ACCESS_TOKEN, is_async=False, log_path="")
+    send_telegram("✅ <b>OI Bot Live!</b> Market open me ATM OI ayega")
 
     while True:
         try:
-            # 1. Nifty Spot
-            res = fyers.quotes({"symbols":"NSE:NIFTY50-INDEX"})
-            if res.get("s")!= "ok":
-                print(f"Fyers Error: {res}")
-                time.sleep(60)
-                continue
+            # Nifty LTP
+            nifty = fyers.quotes({"symbols":"NSE:NIFTY50-INDEX"})
+            if nifty.get("s")!= "ok":
+                time.sleep(60); continue
+            ltp = nifty["d"][0]["v"]["lp"]
+            atm = int(round(ltp/50)*50)
 
-            nifty_ltp = res["d"][0]["v"]["lp"]
-            atm = int(round(nifty_ltp / 50) * 50)
-            print(f"NIFTY {nifty_ltp} ATM {atm}")
-
-            # 2. ATM CE & PE ka OI nikalo - Current week expiry
-            # Fyers symbol: NSE:NIFTY24XXX23050CE
-            # Better: optionchain API use karo
-            data = {"symbol":"NSE:NIFTY50-INDEX", "strikecount":1}
-            chain = fyers.optionchain(data=data)
-
+            # Option Chain se ATM ka OI
+            chain = fyers.optionchain(data={"symbol":"NSE:NIFTY50-INDEX","strikecount":20})
             if chain.get("s") == "ok":
-                # ATM ke aas pass ka data
-                options = chain["data"]["optionsChain"]
-                atm_data = None
-                for opt in options:
-                    if opt["strikePrice"] == atm:
-                        atm_data = opt
-                        break
-                if not atm_data:
-                    atm_data = options[len(options)//2]
+                oc = chain["data"]["optionsChain"]
+                atm_row = min(oc, key=lambda x: abs(x["strikePrice"]-atm))
+                # Fyers chain keys alag-alag ho sakte hai, sab handle kiya
+                ce_oi = atm_row.get("callOI", atm_row.get("oI",0) if "call" not in str(atm_row).lower() else 0)
+                pe_oi = atm_row.get("putOI",0)
+                ce_ch = atm_row.get("callOIChange", atm_row.get("callOICh",0))
+                pe_ch = atm_row.get("putOIChange", atm_row.get("putOICh",0))
 
-                ce_oi = atm_data["ceLongBuildup"] if "ceLongBuildup" in str(atm_data) else atm_data.get("ceOI",0) if "ceOI" in atm_data else atm_data["callOI"]
-                # Simple fallback - agar structure alag ho to quotes se lo
-                raise Exception("Use Quotes fallback")
+                # agar nested structure ho
+                if ce_oi == 0 and "call" in atm_row:
+                    ce_oi = atm_row["call"].get("oi",0)
+                    ce_ch = atm_row["call"].get("oiChange",0)
+                    pe_oi = atm_row["put"].get("oi",0)
+                    pe_ch = atm_row["put"].get("oiChange",0)
 
-            else:
-                raise Exception("Chain fail, use quotes")
+                # Agar abhi bhi 0 hai to quotes se try karo weekly symbols ke liye
+                if ce_oi == 0 and pe_oi == 0:
+                    # Expiry data se symbol lo
+                    expiry = chain["data"]["expiryData"][0]["expiry"] if "expiryData" in chain["data"] else None
+                    print(f"Expiry: {expiry} Row: {atm_row}")
 
-        except Exception as e:
-            # Fallback: Direct Quotes se ATM CE/PE ka OI lo - Ye sabse stable hai
-            try:
-                # Expiry auto detect karne ke liye hum next expiry ka symbol banayenge
-                # Format: NSE:NIFTY25930... 26 = year, 930 = 30 Sep
-                # Easy way: Nifty ki monthly chain se 0 symbol lo
-                today = datetime.now()
-                # Current month expiry try karo - Fyers format NSE:NIFTY25SEP23050CE
-                month_str = today.strftime("%y%b").upper() # 25SEP
-                # Is saal ke Thursdays try karenge
-                ce_sym = f"NSE:NIFTY{month_str}{atm}CE"
-                pe_sym = f"NSE:NIFTY{month_str}{atm}PE"
+                def fmt(n):
+                    try:
+                        n=int(n)
+                        return f"{n/100000:.1f}L" if n>=100000 else f"{n/1000:.1f}k" if n>=1000 else str(n)
+                    except: return str(n)
 
-                # Agar monthly fail to weekly: NSE:NIFTY25916... type
-                q = fyers.quotes({"symbols": f"{ce_sym},{pe_sym}"})
-                print(f"OI Quotes: {q}")
-                if q.get("s") == "ok" and len(q["d"]) >= 2:
-                    ce_d = q["d"][0]["v"] if "CE" in q["d"][0]["n"] else q["d"][1]["v"]
-                    pe_d = q["d"][1]["v"] if "PE" in q["d"][1]["n"] else q["d"][0]["v"]
+                side = "PE Heavy 🟢" if pe_oi>ce_oi else "CE Heavy 🔴" if ce_oi>pe_oi else "Balanced ⚪"
 
-                    ce_oi = ce_d.get("oi",0)
-                    ce_coi = ce_d.get("coi", ce_d.get("oiChange",0))
-                    pe_oi = pe_d.get("oi",0)
-                    pe_coi = pe_d.get("coi", pe_d.get("oiChange",0))
+                msg = f"""⚪ <b>NIFTY {ltp:.0f} | ATM {atm_row['strikePrice']}</b>
 
-                    # Lakh me convert
-                    def fmt(n): return f"{n/100000:.1f}L" if n>1000 else str(n)
-
-                    if pe_oi > ce_oi:
-                        side = "PE Heavy (Support)"
-                        bias = "🟢"
-                    elif ce_oi > pe_oi:
-                        side = "CE Heavy (Resistance)"
-                        bias = "🔴"
-                    else:
-                        side = "Balanced"
-                        bias = "⚪"
-
-                    msg = f"""{bias} <b>NIFTY {nifty_ltp:.0f} | ATM {atm}</b>
-
-PE: OI {fmt(pe_oi)} | CH {fmt(pe_coi)}
-CE: OI {fmt(ce_oi)} | CH {fmt(ce_coi)}
+PE: OI {fmt(pe_oi)} | CH {fmt(pe_ch)}
+CE: OI {fmt(ce_oi)} | CH {fmt(ce_ch)}
 
 👉 {side}
 Diff: {fmt(abs(pe_oi-ce_oi))}"""
+
+                # Raat me 0 hai to spam mat karo, market time pe hi bhejo
+                from datetime import datetime
+                now = datetime.now()
+                if 9 <= now.hour <= 15 and ce_oi!=0:
                     send_telegram(msg)
                 else:
-                    # Last LTP hi bhej do taaki pata chale bot live hai
-                    send_telegram(f"📊 <b>NIFTY {nifty_ltp:.0f} ATM {atm}</b> | Bot Live (OI data wait for market)")
-            except Exception as e2:
-                print(f"OI Error: {e2}")
-                # Market band hai to bhi live proof ke liye Nifty bhej do
-                try:
-                    send_telegram(f"📈 <b>NIFTY Spot {nifty_ltp:.0f} ATM {atm}</b> - Bot Live | OI market hours me ayega")
-                except: pass
+                    print(msg)
+                    # Raat me live proof ke liye ek hi baar
+                    if now.minute % 30 == 0:
+                        send_telegram(f"📈 NIFTY {ltp:.0f} ATM {atm} - Bot Live | OI subah 9:15 se ayega")
 
-        time.sleep(300) # 5 min
+            time.sleep(300) # 5 min
+        except Exception as e:
+            print(f"Loop err: {e}")
+            time.sleep(60)
 
 threading.Thread(target=oi_loop, daemon=True).start()
 
