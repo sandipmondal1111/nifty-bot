@@ -10,84 +10,57 @@ PW = os.getenv("ROEIQ_PASS","").strip()
 B = os.getenv("BOT_TOKEN","").strip()
 C = os.getenv("CHAT_ID","").strip()
 
-# Sahi IP nikalne ka function
-def get_all_ips():
-    ips = []
+# DNS fix - Render ka DNS fail hota hai isliye
+def get_ips():
     try:
-        # Google DNS se
         r = requests.get(f"https://dns.google/resolve?name={H}&type=A", timeout=5).json()
-        for a in r.get('Answer', []):
-            if 'data' in a and '.' in a['data']:
-                ips.append(a['data'])
-    except: pass
-    try:
-        # Cloudflare DNS se
-        r = requests.get(f"https://1.1.1.1/dns-query?name={H}&type=A", headers={"accept": "application/dns-json"}, timeout=5).json()
-        for a in r.get('Answer', []):
-            if 'data' in a and '.' in a['data']:
-                ips.append(a['data'])
-    except: pass
-    # fallback IPs
-    ips += ["104.21.33.34", "104.18.38.10", "172.67.158.15"]
-    return list(dict.fromkeys(ips)) # unique
+        return [a['data'] for a in r.get('Answer', []) if '.' in a.get('data','')]
+    except:
+        return ["104.21.33.34"]
+IPS = get_ips() or ["104.21.33.34"]
+IP = IPS[0]
+print(f"Using IP: {IP}")
 
-IPS = get_all_ips()
-print(f"Trying IPs: {IPS}")
+orig = socket.getaddrinfo
+def patched(h,p,f=0,t=0,pr=0,fl=0):
+    if h == H:
+        return [(2,1,6,'',(IP,p))]
+    return orig(h,p,f,t,pr,fl)
+socket.getaddrinfo = patched
 
-orig_getaddrinfo = socket.getaddrinfo
-current_ip = [IPS[0] if IPS else "104.21.33.34"]
-
-def patched_getaddrinfo(host, port, family=0, type=0, proto=0, flags=0):
-    if host == H:
-        return [(2, 1, 6, '', (current_ip[0], port))]
-    return orig_getaddrinfo(host, port, family, type, proto, flags)
-socket.getaddrinfo = patched_getaddrinfo
-
-def get_token():
-    url = f"https://{H}/auth/v1/token?grant_type=password"
-    headers = {"apikey": K, "Authorization": f"Bearer {K}", "Content-Type": "application/json"}
-    last_err = ""
-    for ip in IPS:
-        current_ip[0] = ip
-        try:
-            print(f"Trying IP {ip} for auth...")
-            r = requests.post(url, headers=headers, json={"email": E, "password": PW}, timeout=15, verify=False)
-            print(f"IP {ip} -> {r.status_code} {r.text[:200]}")
-            if "Project not specified" in r.text:
-                last_err = r.text
-                continue # next IP try karo
-            if r.status_code == 200:
-                return r.json()["access_token"]
-            last_err = r.text
-        except Exception as e:
-            print(f"IP {ip} failed: {e}")
-            last_err = str(e)
-            continue
-    raise Exception(f"Auth fail: {last_err[:500]}")
-
-def get_chain():
-    t = get_token()
+def get_chain_direct():
     url = f"https://{H}/functions/v1/get-option-chain"
-    headers = {"apikey": K, "Authorization": f"Bearer {t}", "Content-Type": "application/json"}
+    # Bina user token ke, sirf anon key se
+    headers = {
+        "apikey": K,
+        "Authorization": f"Bearer {K}",
+        "Content-Type": "application/json",
+        "x-client-info": "supabase-js/2.0.0"
+    }
     r = requests.post(url, headers=headers, json={"symbol": "NIFTY"}, timeout=20, verify=False)
-    return r.json()
+    print(f"Direct call: {r.status_code} {r.text[:500]}")
+    if r.status_code == 200:
+        return r.json()
+    raise Exception(f"Direct fail {r.status_code}: {r.text[:500]}")
 
 @app.route('/')
 def home():
     try:
-        d = get_chain()
-        return f"Bot Working! Spot: {d.get('spot')} IP: {current_ip[0]}"
+        d = get_chain_direct()
+        return f"Bot Working! {d}"
     except Exception as e:
-        return f"Error: {e} | Tried IPs: {IPS}"
+        return f"Error: {e}"
 
 def bg_loop():
     while True:
         try:
-            d = get_chain()
+            d = get_chain_direct()
+            spot = d.get('spot','N/A')
             if B and C:
-                requests.get(f"https://api.telegram.org/bot{B}/sendMessage", params={"chat_id": C, "text": f"NIFTY: {d.get('spot')}"}, timeout=10, verify=False)
+                requests.get(f"https://api.telegram.org/bot{B}/sendMessage", params={"chat_id": C, "text": f"NIFTY Spot: {spot}"}, timeout=10, verify=False)
+            print(f"Loop OK: {spot}")
         except Exception as e:
-            print(f"Loop: {e}")
+            print(f"Loop err: {e}")
         time.sleep(900)
 
 threading.Thread(target=bg_loop, daemon=True).start()
