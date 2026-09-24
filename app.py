@@ -1,115 +1,111 @@
-import os, time, hashlib, requests
-from datetime import datetime
+import os
+import time
+import threading
+from flask import Flask
+import requests
 from fyers_apiv3 import fyersModel
+from fyers_apiv3.FyersWebsocket import data_ws
 
-CLIENT_ID = os.environ.get("CLIENT_ID", "XS45486")
-SECRET_ID = os.environ.get("SECRET_ID", "QDCP2NLBMS") # Tumhara secret
-FYERS_PIN = os.environ.get("FYERS_PIN", "1234") # Tumhara Fyers 4 digit PIN
-REFRESH_TOKEN = os.environ.get("REFRESH_TOKEN") # my_token.py wala refresh_token
-TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
-TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
+# --- ENV VARIABLES (Render se ayenge) ---
+BOT_TOKEN = os.environ.get("BOT_TOKEN")
+CHAT_ID = os.environ.get("CHAT_ID")
+CLIENT_ID = os.environ.get("CLIENT_ID")
+SECRET_ID = os.environ.get("SECRET_ID")
+FYERS_PIN = os.environ.get("FYERS_PIN")
+REFRESH_TOKEN = os.environ.get("REFRESH_TOKEN")
+ACCESS_TOKEN = os.environ.get("ACCESS_TOKEN")
 
-def send_tg(msg):
+app_flask = Flask(__name__)
+
+@app_flask.route('/')
+def home():
+    return "Nifty-Bot is Running! Live"
+
+def run_flask():
+    # Render 10000 port expect karta hai
+    app_flask.run(host='0.0.0.0', port=10000)
+
+# --- Telegram Send Function ---
+def send_telegram(msg):
     try:
-        url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-        requests.post(url, data={"chat_id": TELEGRAM_CHAT_ID, "text": msg, "parse_mode":"HTML"}, timeout=10)
-    except: pass
+        url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+        requests.post(url, data={"chat_id": CHAT_ID, "text": msg, "parse_mode": "HTML"})
+    except Exception as e:
+        print(f"Telegram Error: {e}")
 
+# --- Token Refresh ---
 def get_new_access_token():
+    global ACCESS_TOKEN
     try:
-        # 1. APP_ID_HASH banao
-        app_hash = hashlib.sha256(f"{CLIENT_ID}:{SECRET_ID}".encode()).hexdigest()
-
-        # 2. Refresh API call
-        url = "https://api-t1.fyers.in/api/v3/validate-refresh-token"
-        payload = {
-            "grant_type": "refresh_token",
-            "appIdHash": app_hash,
-            "refresh_token": REFRESH_TOKEN,
-            "pin": FYERS_PIN
-        }
-        r = requests.post(url, json=payload, timeout=10).json()
-        print(f"Refresh Response: {r}")
-
-        if r.get('s')=='ok' or 'access_token' in r:
-            access = r.get('data',{}).get('access_token') or r.get('access_token')
+        # Refresh token se naya access token
+        session = fyersModel.SessionModel(
+            client_id=CLIENT_ID,
+            secret_key=SECRET_ID,
+            redirect_uri="https://trade.fyers.in/api-login/redirect-uri/index.html",
+            response_type="code",
+            grant_type="refresh_token"
+        )
+        session.set_token(REFRESH_TOKEN)
+        # FYERS me pin bhi chahiye hota hai kuch cases me
+        response = session.generate_token()
+        if "access_token" in response:
+            ACCESS_TOKEN = response["access_token"]
             print("New Access Token Mil Gaya!")
-            return f"{CLIENT_ID}:{access}"
+            send_telegram("✅ Bot ON - Auto Token Active")
+            return ACCESS_TOKEN
         else:
-            # Fallback - ENV wala access token
-            print("Refresh fail, ENV token use kar raha hu")
-            at = os.environ.get("ACCESS_TOKEN")
-            return f"{CLIENT_ID}:{at}" if at and not at.startswith(CLIENT_ID) else at
-
+            print(f"Token Refresh Failed: {response}")
+            return None
     except Exception as e:
-        print(f"Token Refresh Error {e}")
-        at = os.environ.get("ACCESS_TOKEN")
-        return f"{CLIENT_ID}:{at}" if at else None
+        print(f"Token Error: {e}")
+        return None
 
-# Startup pe ek baar token refresh
-ACCESS_TOKEN_FULL = get_new_access_token()
-fyers = fyersModel.FyersModel(client_id=CLIENT_ID, token=ACCESS_TOKEN_FULL, log_path="")
-send_tg(f"✅ <b>Bot ON - Auto Token Active</b>\nHash: {hashlib.sha256(f'{CLIENT_ID}:{SECRET_ID}'.encode()).hexdigest()[:10]}...")
+# --- Main Bot Logic ---
+def start_nifty_bot():
+    token = ACCESS_TOKEN
+    if not token:
+        token = get_new_access_token()
 
-prev_call = None
-prev_put = None
-
-while True:
-    try:
-        res = fyers.optionchain(data={"symbol":"NSE:NIFTY50-INDEX","strikecount":15})
-        if res.get('s')!='ok':
-            print(f"API Error, Token Refresh kar raha hu {res}")
-            ACCESS_TOKEN_FULL = get_new_access_token()
-            fyers = fyersModel.FyersModel(client_id=CLIENT_ID, token=ACCESS_TOKEN_FULL, log_path="")
-            time.sleep(10)
-            continue
-
-        chain = res['data']['optionsChain']
-        ltp = chain[0].get('ltp',0)
-        atm = round(ltp/50)*50
-
-        call_choi = put_choi = 0
-        for opt in chain:
-            sp = opt.get('strike_price',0)
-            if sp>0 and abs(sp-atm) <=150:
-                ch = opt.get('oich',{}).get('ch',0)
-                sym = opt.get('symbol','')
-                if 'CE' in sym: call_choi+=ch
-                elif 'PE' in sym: put_choi+=ch
-
-        call_l = call_choi/100000
-        put_l = put_choi/100000
-
-        if prev_call is None:
-            chg_c, chg_p = call_l, put_l
-        else:
-            chg_c = call_l - prev_call
-            chg_p = put_l - prev_put
-
-        # --- 3 LEVEL SENTIMENT ---
-        if chg_c>=20 and chg_p<=-5:
-            senti="🔴 BEARISH - Call Writing"; sugg="Sell on Rise"
-        elif chg_p>=20 and chg_c<=-5:
-            senti="🟢 BULLISH - Put Writing"; sugg="Buy on Dip"
-        elif chg_c<=-15 and chg_p<=-15:
-            senti="⚡ BOTH UNWIND - Big Move"; sugg="Straddle Buy"
-        elif chg_c<=-15:
-            senti="🟢 Call Unwinding"; sugg="Short Covering"
-        elif chg_p<=-15:
-            senti="🔴 Put Unwinding"; sugg="Long Unwinding"
-        else:
-            senti="🟡 MIXED"; sugg="Wait & Watch"
-
-        print(f"{datetime.now().strftime('%H:%M:%S')} LTP:{ltp} C:{chg_c:+.1f} P:{chg_p:+.1f} {senti}")
-
-        # Alert
-        if prev_call is not None and (abs(chg_c)>=20 or abs(chg_p)>=20 or datetime.now().minute%15==0):
-            msg = f"🚨 <b>NIFTY {datetime.now().strftime('%H:%M:%S')}</b>\nLTP:{ltp} ATM:{atm}\nC:{call_l:.1f}L ({chg_c:+.1f}L)\nP:{put_l:.1f}L ({chg_p:+.1f}L)\n\n{senti}\n💡{sugg}"
-            send_tg(msg)
-
-        prev_call, prev_put = call_l, put_l
-        time.sleep(60)
-
-    except Exception as e:
-        print(e)
+    if not token:
+        print("No Token Found!")
         time.sleep(10)
+        return
+
+    fyers = fyersModel.FyersModel(client_id=CLIENT_ID, token=token, is_async=False, log_path="")
+
+    print("Bot Started, Waiting for Market...")
+    send_telegram("🤖 Nifty-Bot Started on Render")
+
+    # Simple LTP Loop - Market Hours me chalega
+    while True:
+        try:
+            # NIFTY 50
+            data = {"symbols":"NSE:NIFTY50-INDEX"}
+            resp = fyers.quotes(data)
+
+            if resp.get("s") == "ok":
+                ltp = resp["d"][0]["v"]["lp"]
+                msg = f"📊 NIFTY: {ltp}\nTime: {time.strftime('%H:%M:%S')}"
+                print(msg)
+                # Har 15 min me bhejo (testing ke liye har 2 min)
+                # send_telegram(msg)
+            else:
+                print(f"API Response: {resp}")
+                # Token expire hua to refresh
+                if "token" in str(resp).lower() or resp.get("code") == -16:
+                    print("Token Expired, Refreshing...")
+                    get_new_access_token()
+
+            time.sleep(60) # 1 min wait
+
+        except Exception as e:
+            print(f"Loop Error: {e}")
+            time.sleep(30)
+
+# --- Start Both ---
+if __name__ == "__main__":
+    # Flask ko alag thread pe chalao taaki Render ko port mile
+    threading.Thread(target=run_flask, daemon=True).start()
+
+    # Bot ko main thread pe chalao
+    start_nifty_bot()
