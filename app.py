@@ -1,38 +1,57 @@
+import requests, os, time
 from flask import Flask
-import threading, time, os, requests
+
 app = Flask(__name__)
-BOT_TOKEN = os.environ.get("BOT_TOKEN")
-CHAT_ID = "1039213382"
-session = requests.Session()
-session.headers.update({"User-Agent": "Mozilla/5.0","Referer": "https://www.nseindia.com/option-chain"})
+
+URL = "https://kscckhjrasotwejshmr.supabase.co"
+ANON = os.getenv("SUPABASE_KEY")
+EMAIL = os.getenv("ROEIQ_EMAIL")
+PASS = os.getenv("ROEIQ_PASS")
+BOT = os.getenv("BOT_TOKEN")
+CHAT = os.getenv("CHAT_ID")
+
+def get_token():
+    r = requests.post(f"{URL}/auth/v1/token?grant_type=password",
+        headers={"apikey": ANON, "Content-Type": "application/json"},
+        json={"email": EMAIL, "password": PASS}, timeout=10)
+    return r.json().get("access_token")
+
+def get_chain():
+    token = get_token()
+    r = requests.post(f"{URL}/functions/v1/get-option-chain",
+        headers={"apikey": ANON, "Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+        json={"symbol": "NIFTY"}, timeout=15)
+    return r.json()
+
 def send_telegram(msg):
+    if not BOT or not CHAT: return
     try:
-        url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-        requests.post(url, json={"chat_id": CHAT_ID, "text": msg, "parse_mode": "HTML"}, timeout=10)
-        print(f"Sent: {msg}")
-    except Exception as e:
-        print(e)
-def get_oi_data():
-    try:
-        session.get("https://www.nseindia.com", timeout=10)
-        url = "https://www.nseindia.com/api/option-chain-indices?symbol=NIFTY"
-        res = session.get(url, timeout=10).json()
-        ce_oi = sum(x['CE']['openInterest'] for x in res['records']['data'] if 'CE' in x)
-        pe_oi = sum(x['PE']['openInterest'] for x in res['records']['data'] if 'PE' in x)
-        pcr = pe_oi/ce_oi if ce_oi else 0
-        spot = res['records']['underlyingValue']
-        return f"📊 NIFTY OI\nSpot: {spot}\nCE OI: {ce_oi}\nPE OI: {pe_oi}\nPCR: {pcr:.2f}"
-    except Exception as e:
-        return f"Error: {e}"
-def bot_logic():
-    send_telegram("✅ Bot Started! Ab OI alert ayega.")
-    while True:
-        msg = get_oi_data()
-        send_telegram(msg)
-        time.sleep(300)
+        requests.get(f"https://api.telegram.org/bot{BOT}/sendMessage?chat_id={CHAT}&text={msg}&parse_mode=Markdown")
+    except: pass
+
 @app.route('/')
 def home():
-    return "Bot is ON - OI Active"
+    try:
+        data = get_chain()
+        spot = data.get('spot') or data.get('underlying') or 'NIFTY'
+        return f"Bot Working! Spot: {spot} | Data OK: {str(data)[:500]}"
+    except Exception as e:
+        return f"Error: {e}"
+
+# Telegram alert loop - Render pe background me chalega
+def start_bot():
+    while True:
+        try:
+            data = get_chain()
+            spot = data.get('spot', 0)
+            msg = f"📊 *NIFTY Update*\nSpot: {spot}\nBot is Live from ROEIQ ✅\nNSE Block Khatam!"
+            send_telegram(msg)
+        except Exception as e:
+            print(e)
+        time.sleep(900) # 15 min
+
+import threading
+threading.Thread(target=start_bot, daemon=True).start()
+
 if __name__ == "__main__":
-    threading.Thread(target=bot_logic, daemon=True).start()
-    app.run(host='0.0.0.0', port=int(os.environ.get("PORT",10000)))
+    app.run(host='0.0.0.0', port=10000)
