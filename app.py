@@ -40,17 +40,28 @@ def telegram_polling():
             print("Polling telegram...")
             url = f"https://api.telegram.org/bot{BOT_TOKEN}/getUpdates?offset={last_update+1}&timeout=10"
             r = requests.get(url, timeout=15).json()
-            print(f"POLL RESULT: {r}")
+            print(f"POLL RESULT: ok={r.get('ok')} count={len(r.get('result',[]))}")
             if r.get("ok"):
                 for upd in r.get("result", []):
                     last_update = upd["update_id"]
-                    text = upd.get("message", {}).get("text", "")
-                    print(f"GOT MSG: {text}")
+                    msg_obj = upd.get("message", {})
+                    text = msg_obj.get("text", "")
+                    from_chat = msg_obj.get("chat", {}).get("id", CHAT_ID)
+                    print(f"GOT MSG: {text} from {from_chat}")
+                    # yahan direct send karenge same chat pe
+                    def send_to_chat(m):
+                        try:
+                            requests.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage", json={"chat_id": from_chat, "text": m, "parse_mode": "Markdown"}, timeout=10)
+                            print(f"SENT to {from_chat}")
+                        except Exception as e:
+                            print(f"SEND ERR {e}")
+
                     if "/token" in text.lower():
                         session = fyersModel.SessionModel(client_id=CLIENT_ID, secret_key=SECRET_KEY, redirect_uri="https://trade.fyers.in/api-login/redirect-uri/index.html", response_type="code", grant_type="authorization_code")
                         link = session.generate_authcode()
-                        send_telegram(f"🔗 *Login Link:*\n{link}")
+                        send_to_chat(f"🔗 *Login Link:*\n{link}")
                     elif "auth_code" in text:
+                        import re
                         m = re.search(r"auth_code=([^&]+)", text)
                         if m:
                             code = m.group(1)
@@ -58,17 +69,9 @@ def telegram_polling():
                             session.set_token(code)
                             resp = session.generate_token()
                             if "access_token" in resp:
-                                send_telegram(f"✅ *Token Updated!*")
+                                send_to_chat(f"✅ *Token Updated!*\n`{resp['access_token'][:20]}...`")
                             else:
-                                send_telegram(f"❌ Error: {resp}")
-                    elif "/status" in text.lower():
-                        try:
-                            fy = get_fyers()
-                            res = fy.quotes({"symbols":"NSE:NIFTY50-INDEX"})
-                            price = res["d"][0]["v"]["lp"] if res.get("s")=="ok" else res
-                            send_telegram(f"📊 *NIFTY: {price}*")
-                        except Exception as e:
-                            send_telegram(f"Error: {e}")
+                                send_to_chat(f"❌ Error: {resp}")
         except Exception as e:
             print(f"Polling error: {e}")
         time.sleep(3)
