@@ -18,7 +18,8 @@ def send_telegram(msg):
         print(f"Telegram error: {e}")
 
 def get_fyers():
-    return fyersModel.FyersModel(client_id=CLIENT_ID, token=ACCESS_TOKEN, log_path="")
+    full_token = f"{CLIENT_ID}:{ACCESS_TOKEN}" if ":" not in ACCESS_TOKEN else ACCESS_TOKEN
+    return fyersModel.FyersModel(client_id=CLIENT_ID, token=full_token, log_path="", is_async=False)
 
 @app.route('/')
 def home():
