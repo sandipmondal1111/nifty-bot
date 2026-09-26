@@ -12,7 +12,7 @@ CHAT_ID = os.getenv("CHAT_ID", "").strip()
 
 @app.route('/')
 def home():
-    return "Bot Live! Telegram Polling Active"
+    return "Bot Live! Polling Active"
 
 @app.route('/delete-webhook')
 def del_hook():
@@ -30,19 +30,36 @@ def telegram_polling():
             print("Polling telegram...", flush=True)
             url = f"https://api.telegram.org/bot{BOT_TOKEN}/getUpdates?offset={last_update+1}&timeout=10"
             r = requests.get(url, timeout=15).json()
-            print(f"POLL: {r.get('ok')} len={len(r.get('result',[]))}", flush=True)
             if r.get("ok"):
                 for upd in r.get("result", []):
                     last_update = upd["update_id"]
                     msg = upd.get("message", {})
                     text = msg.get("text","")
                     chat_id = msg.get("chat",{}).get("id")
-                    print(f"GOT: {text} from {chat_id}", flush=True)
+                    if not text: 
+                        continue
+                    print(f"GOT: {text[:50]} from {chat_id}", flush=True)
+
                     if "/token" in text.lower():
                         session = fyersModel.SessionModel(client_id=CLIENT_ID, secret_key=SECRET_KEY, redirect_uri="https://trade.fyers.in/api-login/redirect-uri/index.html", response_type="code", grant_type="authorization_code")
                         link = session.generate_authcode()
                         requests.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage", json={"chat_id": chat_id, "text": f"🔗 Login Link:\n{link}"}, timeout=10)
-                        print("LINK SENT", flush=True)
+
+                    elif "auth_code" in text:
+                        m = re.search(r"auth_code=([^&]+)", text)
+                        if m:
+                            code = m.group(1)
+                            print(f"AUTH CODE FOUND: {code[:20]}", flush=True)
+                            session = fyersModel.SessionModel(client_id=CLIENT_ID, secret_key=SECRET_KEY, redirect_uri="https://trade.fyers.in/api-login/redirect-uri/index.html", response_type="code", grant_type="authorization_code")
+                            session.set_token(code)
+                            resp = session.generate_token()
+                            print(f"TOKEN RESP: {resp}", flush=True)
+                            if "access_token" in resp:
+                                requests.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage", json={"chat_id": chat_id, "text": f"✅ Token Updated!\nSave this to Render ENV:\n`{resp['access_token']}`", "parse_mode": "Markdown"}, timeout=10)
+                            else:
+                                requests.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage", json={"chat_id": chat_id, "text": f"❌ Error: {resp}"}, timeout=10)
+            else:
+                print(f"POLL FAIL: {r}", flush=True)
         except Exception as e:
             print(f"Poll error: {e}", flush=True)
         time.sleep(2)
