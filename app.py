@@ -6,7 +6,10 @@ app = Flask(__name__)
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 CHAT_ID = os.environ.get("CHAT_ID")
 CLIENT_ID = os.environ.get("CLIENT_ID")
-ACCESS_TOKEN = os.environ.get("ACCESS_TOKEN")
+
+# Flag ko file ki tarah memory me rakhenge
+error_sent = False
+last_error_time = 0
 
 @app.route('/')
 def home(): return "Nifty Bot LIVE - Manual Token"
@@ -17,24 +20,31 @@ def send_telegram(msg):
     except: pass
 
 def bot_loop():
+    global error_sent, last_error_time
     from fyers_apiv3 import fyersModel
-    fyers = fyersModel.FyersModel(client_id=CLIENT_ID, token=ACCESS_TOKEN, is_async=False, log_path="")
+
     send_telegram("✅ <b>Bot LIVE - Fixed No-Spam</b>\nTuesday 1L | Normal 50K")
 
     last_pe, last_ce = 0, 0
-    error_sent = False
 
     while True:
         try:
+            # IMPORTANT: Har baar naya token env se padho
+            ACCESS_TOKEN = os.environ.get("ACCESS_TOKEN")
+            fyers = fyersModel.FyersModel(client_id=CLIENT_ID, token=ACCESS_TOKEN, is_async=False, log_path="")
+
             q = fyers.quotes({"symbols":"NSE:NIFTY50-INDEX"})
             if q.get("s")!="ok":
                 print(f"Token Expire {q}")
-                if not error_sent:
-                    send_telegram("❌ <b>ACCESS_TOKEN Expire</b>\nFyers se naya token bana ke Render > Environment me daalo")
+                # 6 ghante me sirf 1 baar msg
+                if not error_sent or (time.time() - last_error_time > 21600):
+                    send_telegram("❌ <b>ACCESS_TOKEN Expire</b>\nFyers se naya token bana ke Render > Environment me daalo\nYe msg ab 6 ghante me 1 baar hi aayega.")
                     error_sent = True
-                time.sleep(300); continue
+                    last_error_time = time.time()
+                time.sleep(300)
+                continue
 
-            error_sent = False
+            error_sent = False # Token sahi hote hi flag reset
             ltp = q["d"][0]["v"]["lp"]
             atm = int(round(ltp/50)*50)
             chain = fyers.optionchain(data={"symbol":"NSE:NIFTY50-INDEX","strikecount":30})
