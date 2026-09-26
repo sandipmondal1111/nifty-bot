@@ -33,18 +33,14 @@ def del_hook():
 
 def telegram_polling():
     print("Telegram listener STARTED...")
-    try:
-        requests.get(f"https://api.telegram.org/bot{BOT_TOKEN}/deleteWebhook?drop_pending_updates=True", timeout=10)
-        print("Webhook cleared")
-    except Exception as e:
-        print(f"Clear webhook error: {e}")
-
+    time.sleep(2)
     last_update = 0
     while True:
         try:
             print("Polling telegram...")
             url = f"https://api.telegram.org/bot{BOT_TOKEN}/getUpdates?offset={last_update+1}&timeout=10"
             r = requests.get(url, timeout=15).json()
+            print(f"POLL RESULT: {r}")
             if r.get("ok"):
                 for upd in r.get("result", []):
                     last_update = upd["update_id"]
@@ -62,11 +58,7 @@ def telegram_polling():
                             session.set_token(code)
                             resp = session.generate_token()
                             if "access_token" in resp:
-                                ACCESS_TOKEN_NEW = resp["access_token"]
-                                os.environ["FYERS_ACCESS_TOKEN"] = ACCESS_TOKEN_NEW
-                                global ACCESS_TOKEN
-                                ACCESS_TOKEN = ACCESS_TOKEN_NEW
-                                send_telegram(f"✅ *Token Updated!*\nBot ab LIVE hai")
+                                send_telegram(f"✅ *Token Updated!*")
                             else:
                                 send_telegram(f"❌ Error: {resp}")
                     elif "/status" in text.lower():
@@ -78,7 +70,7 @@ def telegram_polling():
                         except Exception as e:
                             send_telegram(f"Error: {e}")
         except Exception as e:
-            print(f"Polling loop error: {e}")
+            print(f"Polling error: {e}")
         time.sleep(3)
 
 threading.Thread(target=telegram_polling, daemon=True).start()
