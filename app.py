@@ -18,12 +18,12 @@ TOKEN_ALERT_DATE = ""
 
 def save_token(t):
     global FYERS_TOKEN
-    FYERS_TOKEN = t
+    FYERS_TOKEN = t.strip()
     try: 
         with open(TOKEN_FILE,"w") as f:
-            f.write(t)
+            f.write(FYERS_TOKEN)
     except: pass
-    print("TOKEN SAVED", flush=True)
+    print(f"TOKEN SAVED len={len(FYERS_TOKEN)}", flush=True)
 
 def load_token():
     try:
@@ -51,19 +51,14 @@ def send_telegram(chat_id, text):
 
 def analyze_all(ce_oich, pe_oich, ce_diff, pe_diff, ce_up, pe_up, nifty, sup, res):
     FAST = 50000
-    # 1. Support Bounce - Tumhara 9:30 wala case
     if abs(nifty-sup) < 60 and ce_diff < -FAST and pe_diff > FAST:
         return f"🔥 SUPPORT BOUNCE @ {sup}\nCE CHOI {ce_diff/1000:.0f}k/min gir raha, PE CHOI +{pe_diff/1000:.0f}k/min badh raha", "Strong Bullish - Support Hold", "CE BUY"
-    # 2. Resistance Rejection
     if abs(nifty-res) < 60 and ce_diff > FAST and pe_diff < -FAST:
         return f"🔥 RESISTANCE REJECTION @ {res}\nCE CHOI +{ce_diff/1000:.0f}k/min badh raha, PE CHOI {pe_diff/1000:.0f}k/min gir raha", "Strong Bearish - Resistance Hold", "PE BUY"
-    # 3. Breakout
     if nifty > res and ce_diff < -FAST:
         return f"🚀 BREAKOUT @ {res}\nNIFTY {nifty} > Res {res}, CE unwinding {ce_diff/1000:.0f}k/min", "Breakout Bullish", "CE BUY"
-    # 4. Breakdown
     if nifty < sup and pe_diff < -FAST:
         return f"💥 BREAKDOWN @ {sup}\nNIFTY {nifty} < Sup {sup}, PE unwinding {pe_diff/1000:.0f}k/min", "Breakdown Bearish", "PE BUY"
-    # 5-8. Original 4 Screenshot wale
     if ce_oich > 0 and ce_up and pe_oich > 0 and not pe_up:
         return "📈 Bullish Setup", "Bullish Pressure", "CE BUYING SETUP"
     if ce_oich > 0 and not ce_up and pe_oich > 0 and pe_up:
@@ -81,8 +76,8 @@ def get_chain_data():
     try:
         fyers = fyersModel.FyersModel(client_id=CLIENT_ID, token=FYERS_TOKEN, is_async=False, log_path="")
         resp = fyers.optionchain(data={"symbol":"NSE:NIFTY50-INDEX","strikecount":15})
-        # Token expire check - FIXED
-        if resp.get("code") in [-401, -402] or "Invalid token" in str(resp) or "Token has expired" in str(resp):
+        # FIX: -15 bhi token error hai
+        if resp.get("code") in [-401, -402, -15] or "Invalid token" in str(resp) or "valid token" in str(resp).lower() or "Token has expired" in str(resp):
             return None, "TOKEN_EXPIRE"
         if not resp.get("data",{}).get("optionsChain"):
             return None, f"OC Error: {resp}"
@@ -137,12 +132,10 @@ def fetch_for_auto():
 
 def auto_alert_loop():
     global TOKEN_ALERT_DATE
-    print("Auto Alert Loop Started", flush=True)
     while True:
         try:
             now = datetime.datetime.now()
             today = now.strftime("%Y-%m-%d")
-            # 8 AM Token Check
             if now.hour==8 and TOKEN_ALERT_DATE!=today:
                 _, err = get_chain_data()
                 if err in ["TOKEN_EXPIRE", "NO_TOKEN"] and LAST_CHAT_ID:
@@ -181,7 +174,6 @@ def auto_alert_loop():
 def telegram_polling():
     global FYERS_TOKEN, LAST_CHAT_ID
     last_update=0
-    print("Telegram Polling Started", flush=True)
     while True:
         try:
             r=requests.get(f"https://api.telegram.org/bot{BOT_TOKEN}/getUpdates?offset={last_update+1}&timeout=10", timeout=15).json()
