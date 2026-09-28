@@ -76,7 +76,6 @@ def get_chain_data():
     try:
         fyers = fyersModel.FyersModel(client_id=CLIENT_ID, token=FYERS_TOKEN, is_async=False, log_path="")
         resp = fyers.optionchain(data={"symbol":"NSE:NIFTY50-INDEX","strikecount":15})
-        # FIX: -15 bhi token error hai
         if resp.get("code") in [-401, -402, -15] or "Invalid token" in str(resp) or "valid token" in str(resp).lower() or "Token has expired" in str(resp):
             return None, "TOKEN_EXPIRE"
         if not resp.get("data",{}).get("optionsChain"):
@@ -189,7 +188,15 @@ def telegram_polling():
                 low=text.lower()
                 if "/status" in low:
                     with DATA_LOCK: sc=PREV_DATA["last_scenario"]
-                    send_telegram(chat_id, f"✅ Bot Online\nTime:{datetime.datetime.now().strftime('%H:%M:%S')}\nToken:{bool(FYERS_TOKEN)}\nLast:{sc}\nAuto ON 9-16 | Sup/Res 15 strikes")
+                    # LIVE CROSS-CHECK
+                    data, err = get_chain_data()
+                    status_msg = f"✅ Bot Online\nTime:{datetime.datetime.now().strftime('%H:%M:%S')}\nToken:{bool(FYERS_TOKEN)}\nLast:{sc}\n"
+                    if err:
+                        status_msg += f"Fyers Check: ❌ {err}"
+                    elif data:
+                        status_msg += f"Fyers Check: ✅ OK NIFTY {data['nifty']}\nAuto ON 9-16 | Sup/Res 15 strikes"
+                    send_telegram(chat_id, status_msg)
+
                 elif "/oi" in low:
                     data, err = get_chain_data()
                     if err in ["TOKEN_EXPIRE","NO_TOKEN"]: 
@@ -199,20 +206,31 @@ def telegram_polling():
                     else:
                         atm=data["atm"]; ce=atm.get("call",{}); pe=atm.get("put",{})
                         send_telegram(chat_id, f"NIFTY {data['nifty']} ATM {atm['strike_price']}\nSup {data['sup']} PE OI {data['sup_oi']/100000:.1f}L\nRes {data['res']} CE OI {data['res_oi']/100000:.1f}L\nCE CHOI {ce.get('oich',0)} PE CHOI {pe.get('oich',0)}")
+
                 elif "/token" in low:
                     s=fyersModel.SessionModel(client_id=CLIENT_ID, secret_key=SECRET_KEY, redirect_uri="https://trade.fyers.in/api-login/redirect-uri/index.html", response_type="code", grant_type="authorization_code")
                     send_telegram(chat_id, f"🔗 Login Link:\n{s.generate_authcode()}\n\nLogin ke baad jo link mile usko yahin paste karo")
+
                 elif "auth_code" in text:
                     m=re.search(r"auth_code=([^&]+)", text)
                     if m:
+                        send_telegram(chat_id, "⏳ Token generate kar raha hu, Fyers check kar raha hu...")
                         s=fyersModel.SessionModel(client_id=CLIENT_ID, secret_key=SECRET_KEY, redirect_uri="https://trade.fyers.in/api-login/redirect-uri/index.html", response_type="code", grant_type="authorization_code")
                         s.set_token(m.group(1))
                         resp=s.generate_token()
                         if "access_token" in resp:
                             save_token(resp['access_token']); FYERS_TOKEN=resp['access_token']
-                            send_telegram(chat_id,"✅ Token Saved! Auto Alert ON hai.")
+                            # YAHI CROSS CHECK HAI JO TUMNE BOLA
+                            data, err = get_chain_data()
+                            if err:
+                                send_telegram(chat_id, f"⚠️ Token to bana lekin Fyers ne data nahi diya: {err}\nToken len={len(FYERS_TOKEN)}")
+                            elif data:
+                                atm=data["atm"]
+                                send_telegram(chat_id, f"✅ Token Accepted by Fyers!\nNIFTY {data['nifty']} ATM {atm['strike_price']}\nSup {data['sup']} Res {data['res']}\nAb Auto Alert ON hai, /oi try karo")
+                            else:
+                                send_telegram(chat_id, "✅ Token Saved! Lekin data empty aaya, /oi se check karo")
                         else: 
-                            send_telegram(chat_id, f"❌ {resp}")
+                            send_telegram(chat_id, f"❌ Token Rejected by Fyers:\n{resp}")
         except Exception as e: 
             print(f"POLL ERR {e}", flush=True)
         time.sleep(1)
