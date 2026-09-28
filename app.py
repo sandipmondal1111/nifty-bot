@@ -19,35 +19,34 @@ TOKEN_ALERT_DATE = ""
 def save_token(t):
     global FYERS_TOKEN
     t = t.strip()
-    # Fyers v3 ko CLIENT_ID:token chahiye
-    if ":" not in t and CLIENT_ID:
-        t = f"{CLIENT_ID}:{t}"
+    # FIX for 429: Sirf raw token save karo, CLIENT_ID: mat jodo
+    if ":" in t:
+        t = t.split(":")[-1]
     FYERS_TOKEN = t
     try:
         with open(TOKEN_FILE,"w") as f:
             f.write(FYERS_TOKEN)
     except: pass
-    print(f"TOKEN SAVED len={len(FYERS_TOKEN)} has_colon={':' in FYERS_TOKEN}", flush=True)
+    print(f"TOKEN SAVED RAW len={len(FYERS_TOKEN)}", flush=True)
 
 def load_token():
     try:
         if os.path.exists(TOKEN_FILE):
             t = open(TOKEN_FILE,"r").read().strip()
-            if t:
-                if ":" not in t and CLIENT_ID:
-                    t = f"{CLIENT_ID}:{t}"
-                return t
+            if ":" in t:
+                t = t.split(":")[-1]
+            if t: return t
     except: pass
     t = os.getenv("FYERS_ACCESS_TOKEN","").strip()
-    if t and ":" not in t and CLIENT_ID:
-        t = f"{CLIENT_ID}:{t}"
+    if ":" in t:
+        t = t.split(":")[-1]
     return t
 
 FYERS_TOKEN = load_token()
 
 @app.route('/')
 def home():
-    return f"Bot Live! Token:{bool(FYERS_TOKEN)} HasColon={':' in FYERS_TOKEN} | Last:{PREV_DATA['last_scenario']}"
+    return f"Bot Live! Token:{bool(FYERS_TOKEN)} Len:{len(FYERS_TOKEN)} | Last:{PREV_DATA['last_scenario']}"
 
 def run_flask():
     app.run(host="0.0.0.0", port=int(os.getenv("PORT",10000)))
@@ -84,13 +83,8 @@ def get_chain_data():
     if not FYERS_TOKEN:
         return None, "NO_TOKEN"
     try:
-        token_to_use = FYERS_TOKEN
-        if ":" not in token_to_use and CLIENT_ID:
-            token_to_use = f"{CLIENT_ID}:{token_to_use}"
-
-        fyers = fyersModel.FyersModel(client_id=CLIENT_ID, token=token_to_use, is_async=False, log_path="")
-
-        # Step 1: NIFTY spot - quotes se (most reliable)
+        # RAW token hi use karo
+        fyers = fyersModel.FyersModel(client_id=CLIENT_ID, token=FYERS_TOKEN, is_async=False, log_path="")
         q = fyers.quotes({"symbols":"NSE:NIFTY50-INDEX"})
         print(f"QUOTES RESP: {q}", flush=True)
         if q.get("code") in [-401, -402, -15] or q.get("s")!= "ok":
@@ -98,7 +92,6 @@ def get_chain_data():
 
         nifty_ltp = q["d"][0]["v"]["lp"] if q.get("d") else 0
 
-        # Step 2: Optionchain
         resp = fyers.optionchain(data={"symbol":"NSE:NIFTY50-INDEX","strikecount":15})
         print(f"OC RESP code={resp.get('code')} last={resp.get('data',{}).get('lastPrice')} count={len(resp.get('data',{}).get('optionsChain',[]))}", flush=True)
 
@@ -108,13 +101,11 @@ def get_chain_data():
             return None, f"OC Error: {resp}"
 
         chains = resp["data"]["optionsChain"]
-
-        # Agar quotes se 0 aaya to OC wala lo
         if nifty_ltp == 0:
             nifty_ltp = resp["data"].get("lastPrice",0)
 
         if nifty_ltp == 0:
-            return None, f"Fyers ne NIFTY 0 diya: Quotes={q} | OC Last={resp.get('data',{}).get('lastPrice')}"
+            return None, f"Fyers ne NIFTY 0 diya: Quotes={q}"
 
         max_pe_oi, max_ce_oi = 0,0
         sup, res = 0,0
@@ -139,10 +130,12 @@ def fetch_for_auto():
     data, err = get_chain_data()
     if err: return err
     if not data: return None
+
     atm = data["atm"]
     ce = atm.get("call",{}); pe = atm.get("put",{})
     ce_ltp, pe_ltp = ce.get('ltp',0), pe.get('ltp',0)
     ce_oich, pe_oich = ce.get('oich',0), pe.get('oich',0)
+
     with DATA_LOCK:
         if PREV_DATA["ce_ltp"] is None:
             PREV_DATA["ce_ltp"]=ce_ltp; PREV_DATA["pe_ltp"]=pe_ltp
@@ -154,7 +147,9 @@ def fetch_for_auto():
         pe_diff = pe_oich - PREV_DATA["pe_oich"]
         PREV_DATA["ce_ltp"]=ce_ltp; PREV_DATA["pe_ltp"]=pe_ltp
         PREV_DATA["ce_oich"]=ce_oich; PREV_DATA["pe_oich"]=pe_oich
+
     scenario, view, action = analyze_all(ce_oich, pe_oich, ce_diff, pe_diff, ce_up, pe_up, data["nifty"], data["sup"], data["res"])
+
     msg = f"🔔 {scenario}\nNIFTY {data['nifty']} | ATM {atm['strike_price']}\nSup {data['sup']} (PE OI {data['sup_oi']/100000:.1f}L) | Res {data['res']} (CE OI {data['res_oi']/100000:.1f}L)\nCE LTP {ce_ltp} ({'↑' if ce_up else '↓'}) CHOI {ce_oich} [{ce_diff/1000:+.0f}k/m]\nPE LTP {pe_ltp} ({'↑' if pe_up else '↓'}) CHOI {pe_oich} [{pe_diff/1000:+.0f}k/m]\nView: {view}\nAction: {action}"
     return scenario, msg, ce_diff, pe_diff
 
@@ -166,12 +161,13 @@ def auto_alert_loop():
             today = now.strftime("%Y-%m-%d")
             if now.hour==8 and TOKEN_ALERT_DATE!=today:
                 _, err = get_chain_data()
-                if err in ["TOKEN_EXPIRE", "NO_TOKEN"] and LAST_CHAT_ID:
+                if err and "TOKEN_EXPIRE" in str(err) and LAST_CHAT_ID:
                     send_telegram(LAST_CHAT_ID,"❌ Token Expire / Missing hai! /token bhejo login karne ke liye.")
                     TOKEN_ALERT_DATE=today
+
             if now.weekday()<5 and 9 <= now.hour < 16:
                 res = fetch_for_auto()
-                if res in ["TOKEN_EXPIRE", "NO_TOKEN"] or (isinstance(res, str) and "TOKEN_EXPIRE" in res):
+                if res and isinstance(res, str) and "TOKEN_EXPIRE" in res:
                     if TOKEN_ALERT_DATE!=today and LAST_CHAT_ID:
                         send_telegram(LAST_CHAT_ID,"❌ Token Expire! /token bhejo")
                         TOKEN_ALERT_DATE=today
@@ -217,7 +213,7 @@ def telegram_polling():
                 if "/status" in low:
                     with DATA_LOCK: sc=PREV_DATA["last_scenario"]
                     data, err = get_chain_data()
-                    status_msg = f"✅ Bot Online\nTime:{datetime.datetime.now().strftime('%H:%M:%S')}\nToken HasColon={':' in FYERS_TOKEN}\nLast:{sc}\n"
+                    status_msg = f"✅ Bot Online\nTime:{datetime.datetime.now().strftime('%H:%M:%S')}\nToken Len:{len(FYERS_TOKEN)}\nLast:{sc}\n"
                     if err:
                         status_msg += f"Check: ❌ {err}"
                     elif data:
@@ -242,12 +238,13 @@ def telegram_polling():
                         s=fyersModel.SessionModel(client_id=CLIENT_ID, secret_key=SECRET_KEY, redirect_uri="https://trade.fyers.in/api-login/redirect-uri/index.html", response_type="code", grant_type="authorization_code")
                         s.set_token(m.group(1))
                         resp=s.generate_token()
+                        print(f"GENERATE_TOKEN RESP: {resp}", flush=True)
                         if "access_token" in resp:
                             save_token(resp['access_token'])
                             FYERS_TOKEN=load_token()
                             data, err = get_chain_data()
                             if err:
-                                send_telegram(chat_id, f"⚠️ Token bana par Fyers data fail: {err}")
+                                send_telegram(chat_id, f"⚠️ Token bana par data fail: {err}")
                             elif data:
                                 atm=data["atm"]
                                 send_telegram(chat_id, f"✅ Token Accepted by Fyers!\nNIFTY {data['nifty']} ATM {atm['strike_price']}\nSup {data['sup']} Res {data['res']}\nAb Auto Alert ON hai, /oi try karo")
